@@ -1,0 +1,16 @@
+name: production
+type: Environment
+
+network:
+  vpc:
+    cidr: 10.40.0.0/16
+    subnets:
+      public:
+        - cidr: 10.40.0.0/24
+        - cidr: 10.40.1.0/24
+      private:
+        - cidr: 10.40.10.0/24
+        - cidr: 10.40.11.0/24
+
+observability:
+  container_insights: true

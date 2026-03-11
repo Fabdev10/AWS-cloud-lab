@@ -1,0 +1,11 @@
+.git
+.gitignore
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+docs/
+infrastructure/
+cli-scripts/
+copilot/
+README.md

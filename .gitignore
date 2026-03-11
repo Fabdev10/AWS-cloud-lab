@@ -1,0 +1,20 @@
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.env
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Copilot generated artifacts
+copilot/.workspace
