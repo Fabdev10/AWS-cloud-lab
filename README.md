@@ -269,10 +269,3 @@ aws cloudformation delete-stack --stack-name aws-cloud-lab-storage
 aws cloudformation delete-stack --stack-name aws-cloud-lab-network
 ```
 
-## What to show on GitHub
-
-- `README.md` as the walkthrough for recruiters and interviewers.
-- `docs/architecture.md` as the architecture explanation.
-- `docs/screenshots.md` as the checklist for console screenshots.
-- The CloudFormation templates and IAM JSON files as explicit IaC and security proof.
-- The Copilot manifests and CLI scripts as evidence of operational tooling.
