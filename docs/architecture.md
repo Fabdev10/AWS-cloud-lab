@@ -24,6 +24,7 @@ flowchart LR
 ## Components
 
 - Application: Flask app containerized with Docker and deployed to ECS Fargate through AWS Copilot.
+- Application API: In addition to health and upload checks, the service can list objects, generate short-lived pre-signed GET URLs, and delete objects for lifecycle demos.
 - Networking: CloudFormation template creates a reusable VPC with two public subnets, two private subnets, and two security groups.
 - Storage: S3 bucket with versioning, AES-256 encryption, and public access blocked.
 - Security: Separate IAM JSON examples show the recommended least-privilege approach and a broader temporary test policy.

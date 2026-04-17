@@ -1,7 +1,9 @@
 import logging
 import os
 import time
+import json
 from datetime import datetime, timezone
+from typing import Any
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -21,6 +23,16 @@ def create_app() -> Flask:
     bucket_name = os.getenv("S3_BUCKET", "")
     s3_client = boto3.client("s3", region_name=region)
 
+    def bucket_not_configured_response():
+        return jsonify({"error": "S3_BUCKET is not configured"}), 400
+
+    def parse_bounded_int(raw_value: Any, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(value, maximum))
+
     @app.get("/")
     def index():
         logger.info("Root endpoint invoked")
@@ -34,6 +46,28 @@ def create_app() -> Flask:
             }
         )
 
+    @app.get("/info")
+    def info():
+        return jsonify(
+            {
+                "service": "aws-cloud-lab",
+                "region": region,
+                "bucket": bucket_name or None,
+                "endpoints": [
+                    "GET /",
+                    "GET /info",
+                    "GET /health",
+                    "GET /s3/check",
+                    "GET /s3/list?prefix=demo/&limit=20",
+                    "GET /s3/presign-get?key=<object-key>&expires=300",
+                    "POST /s3/upload-demo?key=demo/file.txt",
+                    "POST /s3/upload-json",
+                    "DELETE /s3/object?key=demo/file.txt",
+                    "GET /stress?seconds=20",
+                ],
+            }
+        )
+
     @app.get("/health")
     def health():
         return jsonify({"status": "ok"}), 200
@@ -41,7 +75,7 @@ def create_app() -> Flask:
     @app.get("/s3/check")
     def s3_check():
         if not bucket_name:
-            return jsonify({"error": "S3_BUCKET is not configured"}), 400
+            return bucket_not_configured_response()
 
         try:
             s3_client.head_bucket(Bucket=bucket_name)
@@ -54,7 +88,7 @@ def create_app() -> Flask:
     @app.post("/s3/upload-demo")
     def upload_demo():
         if not bucket_name:
-            return jsonify({"error": "S3_BUCKET is not configured"}), 400
+            return bucket_not_configured_response()
 
         object_key = request.args.get("key", f"demo/demo-{int(time.time())}.txt")
         body = (
@@ -69,6 +103,125 @@ def create_app() -> Flask:
             return jsonify({"bucket": bucket_name, "key": object_key, "status": "uploaded"}), 201
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to upload demo object")
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.post("/s3/upload-json")
+    def upload_json_document():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        object_key_raw = payload.get("key", f"demo/json-{int(time.time())}.json")
+        if not isinstance(object_key_raw, str) or not object_key_raw.strip():
+            return jsonify({"error": "field 'key' must be a non-empty string when provided"}), 400
+        object_key = object_key_raw.strip()
+
+        if "content" not in payload:
+            return jsonify({"error": "field 'content' is required"}), 400
+
+        body = json.dumps(payload["content"], indent=2, sort_keys=True, default=str)
+
+        try:
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=object_key,
+                Body=body.encode("utf-8"),
+                ContentType="application/json",
+            )
+            logger.info("Uploaded JSON document to s3://%s/%s", bucket_name, object_key)
+            return (
+                jsonify(
+                    {
+                        "bucket": bucket_name,
+                        "key": object_key,
+                        "status": "uploaded",
+                        "contentType": "application/json",
+                    }
+                ),
+                201,
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to upload JSON document")
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/s3/list")
+    def list_objects():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        prefix = request.args.get("prefix", "demo/")
+        max_keys = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=100)
+
+        try:
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=max_keys)
+            objects = [
+                {
+                    "key": item["Key"],
+                    "size": item["Size"],
+                    "lastModified": item["LastModified"].isoformat(),
+                }
+                for item in response.get("Contents", [])
+            ]
+            return jsonify(
+                {
+                    "bucket": bucket_name,
+                    "prefix": prefix,
+                    "count": len(objects),
+                    "truncated": response.get("IsTruncated", False),
+                    "objects": objects,
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to list objects in s3://%s/%s", bucket_name, prefix)
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/s3/presign-get")
+    def presign_get():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        object_key = request.args.get("key", "").strip()
+        if not object_key:
+            return jsonify({"error": "query parameter 'key' is required"}), 400
+
+        expires_in = parse_bounded_int(request.args.get("expires"), default=300, minimum=60, maximum=3600)
+
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket_name, "Key": object_key},
+                ExpiresIn=expires_in,
+            )
+            return jsonify(
+                {
+                    "bucket": bucket_name,
+                    "key": object_key,
+                    "expiresIn": expires_in,
+                    "url": presigned_url,
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to generate pre-signed URL for s3://%s/%s", bucket_name, object_key)
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.delete("/s3/object")
+    def delete_object():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        object_key = request.args.get("key", "").strip()
+        if not object_key:
+            return jsonify({"error": "query parameter 'key' is required"}), 400
+
+        try:
+            s3_client.delete_object(Bucket=bucket_name, Key=object_key)
+            logger.info("Deleted object from s3://%s/%s", bucket_name, object_key)
+            return jsonify({"bucket": bucket_name, "key": object_key, "status": "deleted"}), 200
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to delete object from s3://%s/%s", bucket_name, object_key)
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/stress")

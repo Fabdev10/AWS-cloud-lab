@@ -43,12 +43,17 @@ aws-cloud-lab/
 
 ## Application behavior
 
-The Flask app exposes four endpoints:
+The Flask app exposes operational and demo endpoints:
 
 - `GET /` returns service metadata.
+- `GET /info` returns an endpoint catalog and runtime configuration.
 - `GET /health` is used by the load balancer health check.
 - `GET /s3/check` validates that the task role can reach the configured bucket.
 - `POST /s3/upload-demo` uploads a small text file to the `demo/` prefix in S3.
+- `POST /s3/upload-json` uploads a custom JSON payload to S3.
+- `GET /s3/list` lists objects under a prefix (default `demo/`).
+- `GET /s3/presign-get` generates a temporary download URL for an object.
+- `DELETE /s3/object` deletes a specific object key.
 - `GET /stress?seconds=20` generates CPU load for CloudWatch alarm demonstrations.
 
 ## Prerequisites
@@ -76,10 +81,23 @@ Then test:
 
 ```bash
 curl http://localhost:8080/
+curl http://localhost:8080/info
 curl http://localhost:8080/health
 curl http://localhost:8080/s3/check
 curl -X POST http://localhost:8080/s3/upload-demo
+curl -X POST http://localhost:8080/s3/upload-json -H "Content-Type: application/json" -d '{"key":"demo/sample.json","content":{"app":"aws-cloud-lab","ok":true}}'
+curl "http://localhost:8080/s3/list?prefix=demo/&limit=10"
+curl "http://localhost:8080/s3/presign-get?key=demo/demo-123.txt&expires=300"
+curl -X DELETE "http://localhost:8080/s3/object?key=demo/demo-123.txt"
 ```
+
+Run automated tests:
+
+```bash
+pytest -q
+```
+
+GitHub CI runs the same test command automatically on push and pull request.
 
 ## Step 1: Create the S3 bucket with CloudFormation
 
@@ -254,8 +272,9 @@ Windows PowerShell variant:
 4. Deploy the application with AWS Copilot.
 5. Open the load balancer URL and hit `/`, `/health`, and `/s3/check`.
 6. Upload a demo file with `/s3/upload-demo` or the CLI script.
-7. Tail CloudWatch logs and verify request entries.
-8. Trigger the CPU alarm and confirm it enters `ALARM` state.
+7. List and inspect uploaded files with `/s3/list` and `/s3/presign-get`.
+8. Tail CloudWatch logs and verify request entries.
+9. Trigger the CPU alarm and confirm it enters `ALARM` state.
 
 ## Cleanup
 
