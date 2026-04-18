@@ -16,6 +16,7 @@ flowchart LR
         end
     end
     ECS --> S3[S3 bucket\nprivate + encrypted]
+    ECS --> STS[AWS STS\ncaller identity]
     ECS --> CWL[CloudWatch Logs]
     ECS --> CWM[CloudWatch Metrics]
     IAM[IAM task role\nleast privilege] --> ECS
@@ -24,11 +25,12 @@ flowchart LR
 ## Components
 
 - Application: Flask app containerized with Docker and deployed to ECS Fargate through AWS Copilot.
-- Application API: In addition to health and upload checks, the service can list objects, generate short-lived pre-signed GET URLs, and delete objects for lifecycle demos.
+- Application API: In addition to health and upload checks, the service can list objects, generate short-lived pre-signed GET URLs, read object metadata, and delete objects for lifecycle demos.
+- Runtime identity: The service exposes an STS-backed endpoint so you can validate which IAM identity is active in the running task role.
 - Networking: CloudFormation template creates a reusable VPC with two public subnets, two private subnets, and two security groups.
 - Storage: S3 bucket with versioning, AES-256 encryption, and public access blocked.
 - Security: Separate IAM JSON examples show the recommended least-privilege approach and a broader temporary test policy.
-- Observability: Logs stream from the container to CloudWatch Logs, while CPUUtilization metrics power the example alarm.
+- Observability: Logs stream from the container to CloudWatch Logs, while ECS CPU and memory metrics power the example alarm and dashboard widgets.
 
 ## Network design
 
@@ -47,3 +49,4 @@ flowchart LR
 2. Tail application logs with `copilot svc logs` or `aws logs tail`.
 3. Deploy the alarm template with the Copilot-created ECS cluster and service names.
 4. Call `/stress?seconds=20` a few times to generate CPU pressure and watch the alarm transition.
+5. Deploy the optional dashboard stack to visualize ECS metrics and recent logs in one view.

@@ -12,7 +12,9 @@ Capture these screenshots after a successful deployment so the repository looks 
 6. IAM policy JSON or attached policy screen for the least-privilege task role.
 7. CloudWatch Logs stream with requests hitting `/`, `/s3/check`, or `/stress`.
 8. CloudWatch alarm history showing the CPU threshold at 70 percent.
-9. API response from `/s3/list` or `/s3/presign-get` to show object lifecycle operations.
+9. CloudWatch dashboard view with ECS CPU/memory widgets and log query panel.
+10. API response from `/aws/identity` showing the active runtime role ARN.
+11. API response from `/s3/list` or `/s3/presign-get` to show object lifecycle operations.
 
 ## Screenshot naming suggestion
 
@@ -24,7 +26,9 @@ Capture these screenshots after a successful deployment so the repository looks 
 - `06-iam-policy.png`
 - `07-cloudwatch-logs.png`
 - `08-cloudwatch-alarm.png`
-- `09-s3-api-response.png`
+- `09-cloudwatch-dashboard.png`
+- `10-aws-identity-api-response.png`
+- `11-s3-api-response.png`
 
 ## Tips
 

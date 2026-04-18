@@ -22,6 +22,7 @@ aws-cloud-lab/
 ├── requirements.txt
 ├── infrastructure/
 │   ├── cloudwatch-alarms.yml
+│   ├── cloudwatch-dashboard.yml
 │   ├── iam-least-privilege.json
 │   ├── iam-s3-full-access-example.json
 │   ├── network.yml
@@ -38,6 +39,9 @@ aws-cloud-lab/
 ├── docs/
 │   ├── architecture.md
 │   └── screenshots.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 └── README.md
 ```
 
@@ -48,11 +52,15 @@ The Flask app exposes operational and demo endpoints:
 - `GET /` returns service metadata.
 - `GET /info` returns an endpoint catalog and runtime configuration.
 - `GET /health` is used by the load balancer health check.
+- `GET /metrics` exposes lightweight runtime counters (uptime, request count, route hits).
+- `GET /aws/identity` returns the runtime IAM identity from AWS STS.
 - `GET /s3/check` validates that the task role can reach the configured bucket.
+- `GET /s3/object-head` reads metadata for an S3 object key.
 - `POST /s3/upload-demo` uploads a small text file to the `demo/` prefix in S3.
 - `POST /s3/upload-json` uploads a custom JSON payload to S3.
 - `GET /s3/list` lists objects under a prefix (default `demo/`).
 - `GET /s3/presign-get` generates a temporary download URL for an object.
+- `GET /s3/presign-put` generates a temporary upload URL for an object.
 - `DELETE /s3/object` deletes a specific object key.
 - `GET /stress?seconds=20` generates CPU load for CloudWatch alarm demonstrations.
 
@@ -83,11 +91,15 @@ Then test:
 curl http://localhost:8080/
 curl http://localhost:8080/info
 curl http://localhost:8080/health
+curl http://localhost:8080/metrics
+curl http://localhost:8080/aws/identity
 curl http://localhost:8080/s3/check
+curl "http://localhost:8080/s3/object-head?key=demo/example.txt"
 curl -X POST http://localhost:8080/s3/upload-demo
 curl -X POST http://localhost:8080/s3/upload-json -H "Content-Type: application/json" -d '{"key":"demo/sample.json","content":{"app":"aws-cloud-lab","ok":true}}'
 curl "http://localhost:8080/s3/list?prefix=demo/&limit=10"
 curl "http://localhost:8080/s3/presign-get?key=demo/demo-123.txt&expires=300"
+curl "http://localhost:8080/s3/presign-put?key=demo/upload.txt&expires=300&contentType=text/plain"
 curl -X DELETE "http://localhost:8080/s3/object?key=demo/demo-123.txt"
 ```
 
@@ -98,6 +110,7 @@ pytest -q
 ```
 
 GitHub CI runs the same test command automatically on push and pull request.
+The workflow also builds the Docker image to catch container build regressions early.
 
 ## Step 1: Create the S3 bucket with CloudFormation
 
@@ -200,7 +213,7 @@ copilot env show --name production
 
 Before deployment, update the `S3_BUCKET` value in `copilot/frontend/manifest.yml` with the real bucket name created by the storage stack.
 
-## Step 5: CloudWatch logs, metrics, and CPU alarm
+## Step 5: CloudWatch logs, metrics, alarms, and dashboard
 
 Logs are produced automatically because the app writes to stdout and stderr.
 
@@ -229,6 +242,21 @@ Validate the alarm from AWS CLI:
 
 ```bash
 aws cloudwatch describe-alarms --alarm-names <alarm-name>
+```
+
+Deploy a reusable CloudWatch dashboard for service health and traffic:
+
+```bash
+aws cloudformation deploy \
+  --stack-name aws-cloud-lab-dashboard \
+  --template-file infrastructure/cloudwatch-dashboard.yml \
+  --parameter-overrides DashboardName=aws-cloud-lab-overview ClusterName=<ecs-cluster-name> ServiceName=<ecs-service-name> LogGroupName=/copilot/aws-cloud-lab-production-frontend
+```
+
+Verify IAM wiring from the running service:
+
+```bash
+curl http://<service-url>/aws/identity
 ```
 
 ## AWS CLI examples
@@ -284,6 +312,7 @@ Remove resources when you finish the demo to avoid ongoing cost:
 copilot svc delete --name frontend --env production
 copilot env delete --name production
 aws cloudformation delete-stack --stack-name aws-cloud-lab-alarms
+aws cloudformation delete-stack --stack-name aws-cloud-lab-dashboard
 aws cloudformation delete-stack --stack-name aws-cloud-lab-storage
 aws cloudformation delete-stack --stack-name aws-cloud-lab-network
 ```
