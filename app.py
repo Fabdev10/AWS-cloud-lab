@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import json
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ def create_app() -> Flask:
     app_started_monotonic = time.monotonic()
     request_count = 0
     route_hits: dict[str, int] = {}
+    audit_events: deque[dict[str, Any]] = deque(maxlen=200)
 
     def bucket_not_configured_response():
         return jsonify({"error": "S3_BUCKET is not configured"}), 400
@@ -37,6 +39,17 @@ def create_app() -> Flask:
         except (TypeError, ValueError):
             return default
         return max(minimum, min(value, maximum))
+
+    def record_audit(action: str, status: str, key: str | None = None, detail: str | None = None) -> None:
+        audit_events.append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": action,
+                "status": status,
+                "key": key,
+                "detail": detail,
+            }
+        )
 
     @app.before_request
     def collect_basic_metrics():
@@ -70,14 +83,18 @@ def create_app() -> Flask:
                     "GET /info",
                     "GET /health",
                     "GET /metrics",
+                    "GET /audit/recent?limit=20",
                     "GET /aws/identity",
                     "GET /s3/check",
                     "GET /s3/object-head?key=<object-key>",
+                    "GET /s3/object-json?key=<object-key>",
                     "GET /s3/list?prefix=demo/&limit=20",
                     "GET /s3/presign-get?key=<object-key>&expires=300",
                     "GET /s3/presign-put?key=<object-key>&expires=300&contentType=text/plain",
                     "POST /s3/upload-demo?key=demo/file.txt",
                     "POST /s3/upload-json",
+                    "POST /s3/copy-object",
+                    "POST /s3/batch-delete",
                     "DELETE /s3/object?key=demo/file.txt",
                     "GET /stress?seconds=20",
                 ],
@@ -101,6 +118,13 @@ def create_app() -> Flask:
                 "routeHits": route_hits,
             }
         )
+
+    @app.get("/audit/recent")
+    def recent_audit_events():
+        limit = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=100)
+        items = list(audit_events)[-limit:]
+        items.reverse()
+        return jsonify({"count": len(items), "events": items})
 
     @app.get("/aws/identity")
     def aws_identity():
@@ -158,6 +182,34 @@ def create_app() -> Flask:
             logger.exception("Failed to fetch metadata for s3://%s/%s", bucket_name, object_key)
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
+    @app.get("/s3/object-json")
+    def get_json_object():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        object_key = request.args.get("key", "").strip()
+        if not object_key:
+            return jsonify({"error": "query parameter 'key' is required"}), 400
+
+        try:
+            response = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+            raw_body = response["Body"].read()
+            text_body = raw_body.decode("utf-8")
+            parsed_json = json.loads(text_body)
+            return jsonify(
+                {
+                    "bucket": bucket_name,
+                    "key": object_key,
+                    "contentType": response.get("ContentType"),
+                    "content": parsed_json,
+                }
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return jsonify({"error": "object content is not valid UTF-8 JSON", "key": object_key}), 400
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to read JSON object from s3://%s/%s", bucket_name, object_key)
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
     @app.post("/s3/upload-demo")
     def upload_demo():
         if not bucket_name:
@@ -173,9 +225,11 @@ def create_app() -> Flask:
         try:
             s3_client.put_object(Bucket=bucket_name, Key=object_key, Body=body.encode("utf-8"))
             logger.info("Uploaded demo object to s3://%s/%s", bucket_name, object_key)
+            record_audit("upload-demo", "success", key=object_key)
             return jsonify({"bucket": bucket_name, "key": object_key, "status": "uploaded"}), 201
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to upload demo object")
+            record_audit("upload-demo", "error", key=object_key, detail=str(exc))
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.post("/s3/upload-json")
@@ -205,6 +259,7 @@ def create_app() -> Flask:
                 ContentType="application/json",
             )
             logger.info("Uploaded JSON document to s3://%s/%s", bucket_name, object_key)
+            record_audit("upload-json", "success", key=object_key)
             return (
                 jsonify(
                     {
@@ -218,6 +273,99 @@ def create_app() -> Flask:
             )
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to upload JSON document")
+            record_audit("upload-json", "error", key=object_key, detail=str(exc))
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.post("/s3/copy-object")
+    def copy_object():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        src_key = str(payload.get("sourceKey", "")).strip()
+        dst_key = str(payload.get("destinationKey", "")).strip()
+        if not src_key or not dst_key:
+            return jsonify({"error": "fields 'sourceKey' and 'destinationKey' are required"}), 400
+
+        metadata = payload.get("metadata")
+        content_type = payload.get("contentType")
+
+        copy_params: dict[str, Any] = {
+            "Bucket": bucket_name,
+            "CopySource": {"Bucket": bucket_name, "Key": src_key},
+            "Key": dst_key,
+        }
+
+        if metadata is not None:
+            if not isinstance(metadata, dict):
+                return jsonify({"error": "field 'metadata' must be an object when provided"}), 400
+            copy_params["Metadata"] = {str(k): str(v) for k, v in metadata.items()}
+            copy_params["MetadataDirective"] = "REPLACE"
+
+        if content_type is not None:
+            if not isinstance(content_type, str) or not content_type.strip():
+                return jsonify({"error": "field 'contentType' must be a non-empty string when provided"}), 400
+            copy_params["ContentType"] = content_type.strip()
+            copy_params["MetadataDirective"] = "REPLACE"
+
+        try:
+            s3_client.copy_object(**copy_params)
+            record_audit("copy-object", "success", key=dst_key, detail=f"from:{src_key}")
+            return jsonify({"bucket": bucket_name, "sourceKey": src_key, "destinationKey": dst_key, "status": "copied"}), 201
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to copy object from s3://%s/%s to s3://%s/%s", bucket_name, src_key, bucket_name, dst_key)
+            record_audit("copy-object", "error", key=dst_key, detail=str(exc))
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.post("/s3/batch-delete")
+    def batch_delete_objects():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        keys_raw = payload.get("keys")
+        if not isinstance(keys_raw, list) or not keys_raw:
+            return jsonify({"error": "field 'keys' must be a non-empty array"}), 400
+
+        keys = []
+        for item in keys_raw:
+            if not isinstance(item, str) or not item.strip():
+                return jsonify({"error": "all 'keys' items must be non-empty strings"}), 400
+            keys.append(item.strip())
+
+        if len(keys) > 1000:
+            return jsonify({"error": "field 'keys' supports up to 1000 items"}), 400
+
+        try:
+            response = s3_client.delete_objects(
+                Bucket=bucket_name,
+                Delete={"Objects": [{"Key": key} for key in keys], "Quiet": False},
+            )
+            deleted = [item.get("Key") for item in response.get("Deleted", [])]
+            errors = response.get("Errors", [])
+            status_code = 207 if errors else 200
+            record_audit("batch-delete", "partial" if errors else "success", detail=f"requested:{len(keys)}")
+            return (
+                jsonify(
+                    {
+                        "bucket": bucket_name,
+                        "requested": len(keys),
+                        "deletedCount": len(deleted),
+                        "deleted": deleted,
+                        "errors": errors,
+                    }
+                ),
+                status_code,
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed batch delete for bucket %s", bucket_name)
+            record_audit("batch-delete", "error", detail=str(exc))
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/s3/list")
@@ -326,9 +474,11 @@ def create_app() -> Flask:
         try:
             s3_client.delete_object(Bucket=bucket_name, Key=object_key)
             logger.info("Deleted object from s3://%s/%s", bucket_name, object_key)
+            record_audit("delete-object", "success", key=object_key)
             return jsonify({"bucket": bucket_name, "key": object_key, "status": "deleted"}), 200
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to delete object from s3://%s/%s", bucket_name, object_key)
+            record_audit("delete-object", "error", key=object_key, detail=str(exc))
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/stress")

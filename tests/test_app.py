@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import io
+import json
 from unittest.mock import patch
 
 import app as app_module
@@ -9,32 +11,60 @@ class FakeS3Client:
     def __init__(self):
         self.deleted_keys = []
         self.put_requests = []
+        self.objects = {
+            "demo/example.txt": {
+                "Body": b"hello from aws-cloud-lab",
+                "ContentType": "text/plain",
+                "Metadata": {"owner": "aws-cloud-lab"},
+                "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+            }
+        }
 
     def head_bucket(self, Bucket):
         return {"ResponseMetadata": {"HTTPStatusCode": 200}}
 
     def head_object(self, Bucket, Key):
+        item = self.objects[Key]
         return {
-            "ContentLength": 256,
-            "ContentType": "text/plain",
+            "ContentLength": len(item["Body"]),
+            "ContentType": item["ContentType"],
             "ETag": '"fake-etag"',
-            "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
-            "Metadata": {"owner": "aws-cloud-lab"},
+            "LastModified": item["LastModified"],
+            "Metadata": item["Metadata"],
         }
 
     def put_object(self, **kwargs):
         self.put_requests.append(kwargs)
+        body = kwargs.get("Body", b"")
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+
+        self.objects[kwargs["Key"]] = {
+            "Body": body,
+            "ContentType": kwargs.get("ContentType", "application/octet-stream"),
+            "Metadata": kwargs.get("Metadata", {}),
+            "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        }
         return {"ETag": "fake-etag"}
 
+    def get_object(self, Bucket, Key):
+        item = self.objects[Key]
+        return {
+            "Body": io.BytesIO(item["Body"]),
+            "ContentType": item["ContentType"],
+        }
+
     def list_objects_v2(self, Bucket, Prefix, MaxKeys):
+        matching_keys = sorted([key for key in self.objects if key.startswith(Prefix)])[:MaxKeys]
         return {
             "IsTruncated": False,
             "Contents": [
                 {
-                    "Key": f"{Prefix}example.txt",
-                    "Size": 42,
-                    "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    "Key": key,
+                    "Size": len(self.objects[key]["Body"]),
+                    "LastModified": self.objects[key]["LastModified"],
                 }
+                for key in matching_keys
             ],
         }
 
@@ -43,7 +73,33 @@ class FakeS3Client:
 
     def delete_object(self, Bucket, Key):
         self.deleted_keys.append(Key)
+        self.objects.pop(Key, None)
         return {}
+
+    def copy_object(self, Bucket, CopySource, Key, **kwargs):
+        source_key = CopySource["Key"]
+        source_item = self.objects[source_key]
+        metadata = kwargs.get("Metadata", source_item.get("Metadata", {}))
+        content_type = kwargs.get("ContentType", source_item.get("ContentType", "application/octet-stream"))
+        self.objects[Key] = {
+            "Body": source_item["Body"],
+            "ContentType": content_type,
+            "Metadata": metadata,
+            "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        }
+        return {}
+
+    def delete_objects(self, Bucket, Delete):
+        deleted = []
+        for item in Delete.get("Objects", []):
+            key = item.get("Key")
+            if key in self.objects:
+                self.objects.pop(key, None)
+                deleted.append({"Key": key})
+        return {"Deleted": deleted}
+
+    def list_object_keys(self):
+        return sorted(self.objects.keys())
 
 
 class FakeStsClient:
@@ -94,6 +150,10 @@ def test_info_endpoint_lists_new_routes(client):
     assert "GET /aws/identity" in data["endpoints"]
     assert "GET /s3/object-head?key=<object-key>" in data["endpoints"]
     assert "GET /s3/presign-put?key=<object-key>&expires=300&contentType=text/plain" in data["endpoints"]
+    assert "GET /s3/object-json?key=<object-key>" in data["endpoints"]
+    assert "POST /s3/copy-object" in data["endpoints"]
+    assert "POST /s3/batch-delete" in data["endpoints"]
+    assert "GET /audit/recent?limit=20" in data["endpoints"]
 
 
 def test_aws_identity_endpoint(client):
@@ -128,8 +188,19 @@ def test_object_head_success(client):
 
     assert response.status_code == 200
     assert data["key"] == "demo/example.txt"
-    assert data["size"] == 256
+    assert data["size"] == len(b"hello from aws-cloud-lab")
     assert data["metadata"]["owner"] == "aws-cloud-lab"
+
+
+def test_object_json_requires_key(client):
+    response = client.get("/s3/object-json")
+    assert response.status_code == 400
+
+
+def test_object_json_rejects_non_json_object(client):
+    response = client.get("/s3/object-json?key=demo/example.txt")
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "object content is not valid UTF-8 JSON"
 
 
 def test_s3_list_endpoint(client):
@@ -188,3 +259,86 @@ def test_upload_json_success(client):
     assert response.status_code == 201
     assert data["status"] == "uploaded"
     assert data["key"] == "demo/payload.json"
+
+
+def test_object_json_success(client):
+    client.post(
+        "/s3/upload-json",
+        json={
+            "key": "demo/config.json",
+            "content": {"environment": "production", "version": 2},
+        },
+    )
+    response = client.get("/s3/object-json?key=demo/config.json")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["key"] == "demo/config.json"
+    assert data["content"]["environment"] == "production"
+
+
+def test_copy_object_success(client):
+    response = client.post(
+        "/s3/copy-object",
+        json={
+            "sourceKey": "demo/example.txt",
+            "destinationKey": "demo/example-copy.txt",
+            "metadata": {"copied": True},
+            "contentType": "text/plain",
+        },
+    )
+    data = response.get_json()
+
+    assert response.status_code == 201
+    assert data["status"] == "copied"
+    assert data["destinationKey"] == "demo/example-copy.txt"
+
+    copied_head = client.get("/s3/object-head?key=demo/example-copy.txt").get_json()
+    assert copied_head["metadata"]["copied"] == "True"
+
+
+def test_copy_object_validation(client):
+    response = client.post("/s3/copy-object", json={"sourceKey": "demo/example.txt"})
+    assert response.status_code == 400
+
+
+def test_batch_delete_success(client):
+    client.post(
+        "/s3/upload-json",
+        json={"key": "demo/remove-1.json", "content": {"remove": 1}},
+    )
+    client.post(
+        "/s3/upload-json",
+        json={"key": "demo/remove-2.json", "content": {"remove": 2}},
+    )
+
+    response = client.post(
+        "/s3/batch-delete",
+        json={"keys": ["demo/remove-1.json", "demo/remove-2.json"]},
+    )
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["requested"] == 2
+    assert data["deletedCount"] == 2
+
+
+def test_batch_delete_validation(client):
+    response = client.post("/s3/batch-delete", json={"keys": [""]})
+    assert response.status_code == 400
+
+
+def test_audit_recent_events(client):
+    client.post(
+        "/s3/upload-json",
+        json={"key": "demo/audit.json", "content": {"ok": True}},
+    )
+    client.delete("/s3/object?key=demo/audit.json")
+
+    response = client.get("/audit/recent?limit=5")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["count"] >= 2
+    assert any(event["action"] == "upload-json" for event in data["events"])
+    assert any(event["action"] == "delete-object" for event in data["events"])
