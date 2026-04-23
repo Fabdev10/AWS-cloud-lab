@@ -17,6 +17,12 @@ class FakeS3Client:
                 "ContentType": "text/plain",
                 "Metadata": {"owner": "aws-cloud-lab"},
                 "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+            },
+            "demo/sample.json": {
+                "Body": b'{"hello": "world"}',
+                "ContentType": "application/json",
+                "Metadata": {},
+                "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
             }
         }
 
@@ -54,15 +60,23 @@ class FakeS3Client:
             "ContentType": item["ContentType"],
         }
 
-    def list_objects_v2(self, Bucket, Prefix, MaxKeys):
-        matching_keys = sorted([key for key in self.objects if key.startswith(Prefix)])[:MaxKeys]
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys, ContinuationToken=None):
+        all_matching_keys = sorted([key for key in self.objects if key.startswith(Prefix)])
+        start_index = int(ContinuationToken) if ContinuationToken is not None else 0
+        end_index = start_index + MaxKeys
+        matching_keys = all_matching_keys[start_index:end_index]
+        is_truncated = end_index < len(all_matching_keys)
+        next_token = str(end_index) if is_truncated else None
+
         return {
-            "IsTruncated": False,
+            "IsTruncated": is_truncated,
+            "NextContinuationToken": next_token,
             "Contents": [
                 {
                     "Key": key,
                     "Size": len(self.objects[key]["Body"]),
                     "LastModified": self.objects[key]["LastModified"],
+                    "StorageClass": "STANDARD",
                 }
                 for key in matching_keys
             ],
@@ -143,7 +157,8 @@ def test_info_endpoint_lists_new_routes(client):
     data = response.get_json()
 
     assert response.status_code == 200
-    assert "GET /s3/list?prefix=demo/&limit=20" in data["endpoints"]
+    assert "GET /s3/list?prefix=demo/&limit=20&cursor=<token>" in data["endpoints"]
+    assert "GET /s3/stats?prefix=demo/" in data["endpoints"]
     assert "POST /s3/upload-json" in data["endpoints"]
     assert "DELETE /s3/object?key=demo/file.txt" in data["endpoints"]
     assert "GET /metrics" in data["endpoints"]
@@ -208,8 +223,36 @@ def test_s3_list_endpoint(client):
     data = response.get_json()
 
     assert response.status_code == 200
-    assert data["count"] == 1
+    assert data["count"] == 2
     assert data["objects"][0]["key"] == "demo/example.txt"
+
+
+def test_s3_list_pagination(client):
+    first_response = client.get("/s3/list?prefix=demo/&limit=1")
+    first_data = first_response.get_json()
+
+    assert first_response.status_code == 200
+    assert first_data["count"] == 1
+    assert first_data["truncated"] is True
+    assert first_data["nextCursor"] is not None
+
+    second_response = client.get(f"/s3/list?prefix=demo/&limit=1&cursor={first_data['nextCursor']}")
+    second_data = second_response.get_json()
+
+    assert second_response.status_code == 200
+    assert second_data["count"] == 1
+    assert second_data["objects"][0]["key"] == "demo/sample.json"
+
+
+def test_s3_stats_endpoint(client):
+    response = client.get("/s3/stats?prefix=demo/")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["objectCount"] == 2
+    assert data["totalBytes"] >= len(b"hello from aws-cloud-lab")
+    assert data["storageClassAssumed"] == "STANDARD"
+    assert data["largestObject"]["key"] in {"demo/example.txt", "demo/sample.json"}
 
 
 def test_presign_requires_key(client):

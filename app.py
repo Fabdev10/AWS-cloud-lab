@@ -88,7 +88,8 @@ def create_app() -> Flask:
                     "GET /s3/check",
                     "GET /s3/object-head?key=<object-key>",
                     "GET /s3/object-json?key=<object-key>",
-                    "GET /s3/list?prefix=demo/&limit=20",
+                    "GET /s3/list?prefix=demo/&limit=20&cursor=<token>",
+                    "GET /s3/stats?prefix=demo/",
                     "GET /s3/presign-get?key=<object-key>&expires=300",
                     "GET /s3/presign-put?key=<object-key>&expires=300&contentType=text/plain",
                     "POST /s3/upload-demo?key=demo/file.txt",
@@ -374,15 +375,25 @@ def create_app() -> Flask:
             return bucket_not_configured_response()
 
         prefix = request.args.get("prefix", "demo/")
-        max_keys = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=100)
+        max_keys = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=1000)
+        cursor = request.args.get("cursor", "").strip()
 
         try:
-            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=max_keys)
+            list_params: dict[str, Any] = {
+                "Bucket": bucket_name,
+                "Prefix": prefix,
+                "MaxKeys": max_keys,
+            }
+            if cursor:
+                list_params["ContinuationToken"] = cursor
+
+            response = s3_client.list_objects_v2(**list_params)
             objects = [
                 {
                     "key": item["Key"],
                     "size": item["Size"],
                     "lastModified": item["LastModified"].isoformat(),
+                    "storageClass": item.get("StorageClass", "STANDARD"),
                 }
                 for item in response.get("Contents", [])
             ]
@@ -392,11 +403,79 @@ def create_app() -> Flask:
                     "prefix": prefix,
                     "count": len(objects),
                     "truncated": response.get("IsTruncated", False),
+                    "nextCursor": response.get("NextContinuationToken"),
                     "objects": objects,
                 }
             )
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to list objects in s3://%s/%s", bucket_name, prefix)
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/s3/stats")
+    def s3_stats():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        prefix = request.args.get("prefix", "demo/")
+        storage_price_per_gb = float(os.getenv("S3_STANDARD_STORAGE_PRICE_PER_GB", "0.023"))
+
+        total_bytes = 0
+        object_count = 0
+        largest_object: dict[str, Any] | None = None
+        continuation_token: str | None = None
+
+        try:
+            while True:
+                list_params: dict[str, Any] = {
+                    "Bucket": bucket_name,
+                    "Prefix": prefix,
+                    "MaxKeys": 1000,
+                }
+                if continuation_token:
+                    list_params["ContinuationToken"] = continuation_token
+
+                response = s3_client.list_objects_v2(**list_params)
+                contents = response.get("Contents", [])
+
+                for item in contents:
+                    size = int(item.get("Size", 0))
+                    total_bytes += size
+                    object_count += 1
+
+                    if largest_object is None or size > largest_object["size"]:
+                        largest_object = {
+                            "key": item.get("Key"),
+                            "size": size,
+                            "lastModified": item.get("LastModified").isoformat() if item.get("LastModified") else None,
+                        }
+
+                if not response.get("IsTruncated"):
+                    break
+
+                continuation_token = response.get("NextContinuationToken")
+                if not continuation_token:
+                    break
+
+            total_gb = total_bytes / (1024 ** 3)
+            estimated_monthly_cost_usd = round(total_gb * storage_price_per_gb, 4)
+
+            return jsonify(
+                {
+                    "bucket": bucket_name,
+                    "prefix": prefix,
+                    "objectCount": object_count,
+                    "totalBytes": total_bytes,
+                    "totalGiB": round(total_gb, 6),
+                    "storageClassAssumed": "STANDARD",
+                    "estimatedMonthlyStorageCostUsd": estimated_monthly_cost_usd,
+                    "largestObject": largest_object,
+                    "sampledAt": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except ValueError:
+            return jsonify({"error": "invalid S3_STANDARD_STORAGE_PRICE_PER_GB value"}), 500
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to calculate s3 stats for s3://%s/%s", bucket_name, prefix)
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/s3/presign-get")

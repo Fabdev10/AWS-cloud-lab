@@ -57,11 +57,12 @@ The Flask app exposes operational and demo endpoints:
 - `GET /s3/check` validates that the task role can reach the configured bucket.
 - `GET /s3/object-head` reads metadata for an S3 object key.
 - `GET /s3/object-json` downloads an object and validates/parses it as UTF-8 JSON.
+- `GET /s3/stats` calculates object count, total bytes, largest object, and an estimated monthly storage cost for a prefix.
 - `POST /s3/upload-demo` uploads a small text file to the `demo/` prefix in S3.
 - `POST /s3/upload-json` uploads a custom JSON payload to S3.
 - `POST /s3/copy-object` copies an object inside the bucket (with optional metadata/content type override).
 - `POST /s3/batch-delete` deletes up to 1000 object keys in one request.
-- `GET /s3/list` lists objects under a prefix (default `demo/`).
+- `GET /s3/list` lists objects under a prefix (default `demo/`) with optional cursor-based pagination.
 - `GET /s3/presign-get` generates a temporary download URL for an object.
 - `GET /s3/presign-put` generates a temporary upload URL for an object.
 - `DELETE /s3/object` deletes a specific object key.
@@ -100,11 +101,13 @@ curl http://localhost:8080/aws/identity
 curl http://localhost:8080/s3/check
 curl "http://localhost:8080/s3/object-head?key=demo/example.txt"
 curl "http://localhost:8080/s3/object-json?key=demo/sample.json"
+curl "http://localhost:8080/s3/stats?prefix=demo/"
 curl -X POST http://localhost:8080/s3/upload-demo
 curl -X POST http://localhost:8080/s3/upload-json -H "Content-Type: application/json" -d '{"key":"demo/sample.json","content":{"app":"aws-cloud-lab","ok":true}}'
 curl -X POST http://localhost:8080/s3/copy-object -H "Content-Type: application/json" -d '{"sourceKey":"demo/sample.json","destinationKey":"demo/sample-copy.json"}'
 curl -X POST http://localhost:8080/s3/batch-delete -H "Content-Type: application/json" -d '{"keys":["demo/sample-copy.json","demo/demo-123.txt"]}'
 curl "http://localhost:8080/s3/list?prefix=demo/&limit=10"
+curl "http://localhost:8080/s3/list?prefix=demo/&limit=10&cursor=<nextCursor>"
 curl "http://localhost:8080/s3/presign-get?key=demo/demo-123.txt&expires=300"
 curl "http://localhost:8080/s3/presign-put?key=demo/upload.txt&expires=300&contentType=text/plain"
 curl -X DELETE "http://localhost:8080/s3/object?key=demo/demo-123.txt"
