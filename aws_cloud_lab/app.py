@@ -1,7 +1,4 @@
-from aws_cloud_lab.app import create_app
-
-
-app = create_app()import logging
+import logging
 import os
 import time
 import json
