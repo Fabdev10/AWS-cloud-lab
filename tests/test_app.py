@@ -1,7 +1,14 @@
 from datetime import datetime, timezone
 import io
 import json
+from pathlib import Path
+import sys
 from unittest.mock import patch
+
+# Ensure project root is importable in CI before importing app module.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import app as app_module
 import pytest
