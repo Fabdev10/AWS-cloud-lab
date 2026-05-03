@@ -25,7 +25,7 @@ flowchart LR
 ## Components
 
 - Application: Flask app containerized with Docker and deployed to ECS Fargate through AWS Copilot.
-- Application API: In addition to health and upload checks, the service can list objects with cursor pagination, generate short-lived pre-signed URLs, read object metadata and JSON payloads, copy objects, batch-delete object keys, estimate per-prefix storage footprint/cost, and expose a recent in-memory audit stream for operational demos.
+- Application API: In addition to health and upload checks, the service can list objects with cursor pagination, generate short-lived pre-signed URLs, read object metadata and JSON payloads, copy objects, batch-delete object keys, estimate per-prefix storage footprint/cost, generate a lightweight inventory report by extension and recency, and expose a recent in-memory audit stream for operational demos.
 - Runtime identity: The service exposes an STS-backed endpoint so you can validate which IAM identity is active in the running task role.
 - Networking: CloudFormation template creates a reusable VPC with two public subnets, two private subnets, and two security groups.
 - Storage: S3 bucket with versioning, AES-256 encryption, and public access blocked.

@@ -58,6 +58,7 @@ The Flask app exposes operational and demo endpoints:
 - `GET /s3/object-head` reads metadata for an S3 object key.
 - `GET /s3/object-json` downloads an object and validates/parses it as UTF-8 JSON.
 - `GET /s3/stats` calculates object count, total bytes, largest object, and an estimated monthly storage cost for a prefix.
+- `GET /s3/inventory-report` produces a prefix report with extension breakdown plus newest/oldest/recent objects.
 - `POST /s3/upload-demo` uploads a small text file to the `demo/` prefix in S3.
 - `POST /s3/upload-json` uploads a custom JSON payload to S3.
 - `POST /s3/copy-object` copies an object inside the bucket (with optional metadata/content type override).
@@ -102,6 +103,7 @@ curl http://localhost:8080/s3/check
 curl "http://localhost:8080/s3/object-head?key=demo/example.txt"
 curl "http://localhost:8080/s3/object-json?key=demo/sample.json"
 curl "http://localhost:8080/s3/stats?prefix=demo/"
+curl "http://localhost:8080/s3/inventory-report?prefix=demo/&recent=5"
 curl -X POST http://localhost:8080/s3/upload-demo
 curl -X POST http://localhost:8080/s3/upload-json -H "Content-Type: application/json" -d '{"key":"demo/sample.json","content":{"app":"aws-cloud-lab","ok":true}}'
 curl -X POST http://localhost:8080/s3/copy-object -H "Content-Type: application/json" -d '{"sourceKey":"demo/sample.json","destinationKey":"demo/sample-copy.json"}'

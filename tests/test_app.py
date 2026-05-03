@@ -22,7 +22,7 @@ class FakeS3Client:
                 "Body": b'{"hello": "world"}',
                 "ContentType": "application/json",
                 "Metadata": {},
-                "LastModified": datetime(2026, 1, 2, tzinfo=timezone.utc),
+                "LastModified": datetime(2026, 1, 3, tzinfo=timezone.utc),
             }
         }
 
@@ -166,6 +166,7 @@ def test_info_endpoint_lists_new_routes(client):
     assert "GET /s3/object-head?key=<object-key>" in data["endpoints"]
     assert "GET /s3/presign-put?key=<object-key>&expires=300&contentType=text/plain" in data["endpoints"]
     assert "GET /s3/object-json?key=<object-key>" in data["endpoints"]
+    assert "GET /s3/inventory-report?prefix=demo/&recent=5" in data["endpoints"]
     assert "POST /s3/copy-object" in data["endpoints"]
     assert "POST /s3/batch-delete" in data["endpoints"]
     assert "GET /audit/recent?limit=20" in data["endpoints"]
@@ -253,6 +254,19 @@ def test_s3_stats_endpoint(client):
     assert data["totalBytes"] >= len(b"hello from aws-cloud-lab")
     assert data["storageClassAssumed"] == "STANDARD"
     assert data["largestObject"]["key"] in {"demo/example.txt", "demo/sample.json"}
+
+
+def test_s3_inventory_report_endpoint(client):
+    response = client.get("/s3/inventory-report?prefix=demo/&recent=2")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["objectCount"] == 2
+    assert data["totalBytes"] >= len(b"hello from aws-cloud-lab")
+    assert data["newestObject"]["key"] == "demo/sample.json"
+    assert data["oldestObject"]["key"] == "demo/example.txt"
+    assert data["recentObjects"][0]["key"] == "demo/sample.json"
+    assert {item["extension"] for item in data["extensions"]} == {".json", ".txt"}
 
 
 def test_presign_requires_key(client):

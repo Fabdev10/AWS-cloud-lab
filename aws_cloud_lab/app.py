@@ -89,6 +89,7 @@ def create_app() -> Flask:
                     "GET /s3/object-head?key=<object-key>",
                     "GET /s3/object-json?key=<object-key>",
                     "GET /s3/list?prefix=demo/&limit=20&cursor=<token>",
+                    "GET /s3/inventory-report?prefix=demo/&recent=5",
                     "GET /s3/stats?prefix=demo/",
                     "GET /s3/presign-get?key=<object-key>&expires=300",
                     "GET /s3/presign-put?key=<object-key>&expires=300&contentType=text/plain",
@@ -409,6 +410,112 @@ def create_app() -> Flask:
             )
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to list objects in s3://%s/%s", bucket_name, prefix)
+            return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/s3/inventory-report")
+    def s3_inventory_report():
+        if not bucket_name:
+            return bucket_not_configured_response()
+
+        prefix = request.args.get("prefix", "demo/")
+        recent_limit = parse_bounded_int(request.args.get("recent"), default=5, minimum=1, maximum=20)
+
+        total_bytes = 0
+        object_count = 0
+        extension_map: dict[str, dict[str, Any]] = {}
+        ordered_objects: list[dict[str, Any]] = []
+        continuation_token: str | None = None
+
+        try:
+            while True:
+                list_params: dict[str, Any] = {
+                    "Bucket": bucket_name,
+                    "Prefix": prefix,
+                    "MaxKeys": 1000,
+                }
+                if continuation_token:
+                    list_params["ContinuationToken"] = continuation_token
+
+                response = s3_client.list_objects_v2(**list_params)
+                contents = response.get("Contents", [])
+
+                for item in contents:
+                    key = item.get("Key", "")
+                    size = int(item.get("Size", 0))
+                    last_modified = item.get("LastModified")
+                    extension = os.path.splitext(key)[1].lower() or "[no extension]"
+
+                    total_bytes += size
+                    object_count += 1
+
+                    extension_summary = extension_map.setdefault(
+                        extension,
+                        {"extension": extension, "count": 0, "totalBytes": 0},
+                    )
+                    extension_summary["count"] += 1
+                    extension_summary["totalBytes"] += size
+
+                    ordered_objects.append(
+                        {
+                            "key": key,
+                            "size": size,
+                            "lastModified": last_modified,
+                        }
+                    )
+
+                if not response.get("IsTruncated"):
+                    break
+
+                continuation_token = response.get("NextContinuationToken")
+                if not continuation_token:
+                    break
+
+            ordered_objects.sort(
+                key=lambda item: item["lastModified"] or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
+
+            recent_objects = [
+                {
+                    "key": item["key"],
+                    "size": item["size"],
+                    "lastModified": item["lastModified"].isoformat() if item["lastModified"] else None,
+                }
+                for item in ordered_objects[:recent_limit]
+            ]
+
+            newest_object = recent_objects[0] if recent_objects else None
+            oldest_source = ordered_objects[-1] if ordered_objects else None
+            oldest_object = (
+                {
+                    "key": oldest_source["key"],
+                    "size": oldest_source["size"],
+                    "lastModified": oldest_source["lastModified"].isoformat() if oldest_source["lastModified"] else None,
+                }
+                if oldest_source
+                else None
+            )
+
+            extensions = sorted(
+                extension_map.values(),
+                key=lambda item: (-item["count"], item["extension"]),
+            )
+
+            return jsonify(
+                {
+                    "bucket": bucket_name,
+                    "prefix": prefix,
+                    "objectCount": object_count,
+                    "totalBytes": total_bytes,
+                    "extensions": extensions,
+                    "newestObject": newest_object,
+                    "oldestObject": oldest_object,
+                    "recentObjects": recent_objects,
+                    "generatedAt": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to generate inventory report for s3://%s/%s", bucket_name, prefix)
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/s3/stats")
