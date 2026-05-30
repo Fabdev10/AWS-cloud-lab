@@ -22,8 +22,10 @@ def create_app() -> Flask:
     logger = logging.getLogger("aws-cloud-lab")
     region = os.getenv("AWS_REGION", "eu-west-1")
     bucket_name = os.getenv("S3_BUCKET", "")
+    db_table_name = os.getenv("DYNAMODB_TABLE", "")
     s3_client = boto3.client("s3", region_name=region)
     sts_client = boto3.client("sts", region_name=region)
+    dynamodb_client = boto3.client("dynamodb", region_name=region)
     app_started_at_utc = datetime.now(timezone.utc)
     app_started_monotonic = time.monotonic()
     request_count = 0
@@ -32,6 +34,9 @@ def create_app() -> Flask:
 
     def bucket_not_configured_response():
         return jsonify({"error": "S3_BUCKET is not configured"}), 400
+
+    def table_not_configured_response():
+        return jsonify({"error": "DYNAMODB_TABLE is not configured"}), 400
 
     def parse_bounded_int(raw_value: Any, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -78,6 +83,7 @@ def create_app() -> Flask:
                 "service": "aws-cloud-lab",
                 "region": region,
                 "bucket": bucket_name or None,
+                "table": db_table_name or None,
                 "endpoints": [
                     "GET /",
                     "GET /info",
@@ -98,6 +104,11 @@ def create_app() -> Flask:
                     "POST /s3/copy-object",
                     "POST /s3/batch-delete",
                     "DELETE /s3/object?key=demo/file.txt",
+                    "GET /dynamodb/check",
+                    "GET /dynamodb/get?key=<item-key>",
+                    "POST /dynamodb/put",
+                    "DELETE /dynamodb/delete?key=<item-key>",
+                    "GET /dynamodb/scan?limit=20",
                     "GET /stress?seconds=20",
                 ],
             }
@@ -666,6 +677,152 @@ def create_app() -> Flask:
             logger.exception("Failed to delete object from s3://%s/%s", bucket_name, object_key)
             record_audit("delete-object", "error", key=object_key, detail=str(exc))
             return jsonify({"bucket": bucket_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/dynamodb/check")
+    def dynamodb_check():
+        if not db_table_name:
+            return table_not_configured_response()
+        try:
+            dynamodb_client.describe_table(TableName=db_table_name)
+            logger.info("DynamoDB table check succeeded for %s", db_table_name)
+            return jsonify({"table": db_table_name, "status": "reachable"})
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("DynamoDB table check failed")
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.post("/dynamodb/put")
+    def dynamodb_put():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        key = payload.get("key", "").strip()
+        if not key:
+            return jsonify({"error": "field 'key' must be a non-empty string"}), 400
+
+        if "value" not in payload:
+            return jsonify({"error": "field 'value' is required"}), 400
+
+        val_str = json.dumps(payload["value"], sort_keys=True, default=str)
+        updated_at = datetime.now(timezone.utc).isoformat()
+
+        try:
+            dynamodb_client.put_item(
+                TableName=db_table_name,
+                Item={
+                    "id": {"S": key},
+                    "value": {"S": val_str},
+                    "updatedAt": {"S": updated_at},
+                }
+            )
+            logger.info("Saved item key=%s to DynamoDB table %s", key, db_table_name)
+            record_audit("dynamodb-put", "success", key=key)
+            return jsonify({"table": db_table_name, "key": key, "status": "saved", "updatedAt": updated_at}), 201
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to put item in DynamoDB")
+            record_audit("dynamodb-put", "error", key=key, detail=str(exc))
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/dynamodb/get")
+    def dynamodb_get():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        key = request.args.get("key", "").strip()
+        if not key:
+            return jsonify({"error": "query parameter 'key' is required"}), 400
+
+        try:
+            response = dynamodb_client.get_item(
+                TableName=db_table_name,
+                Key={"id": {"S": key}}
+            )
+            item = response.get("Item")
+            if not item:
+                return jsonify({"error": f"item not found for key: {key}"}), 404
+
+            raw_value = item.get("value", {}).get("S", "{}")
+            try:
+                parsed_value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                parsed_value = raw_value
+
+            return jsonify(
+                {
+                    "table": db_table_name,
+                    "key": key,
+                    "value": parsed_value,
+                    "updatedAt": item.get("updatedAt", {}).get("S"),
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to get item from DynamoDB key=%s", key)
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.delete("/dynamodb/delete")
+    def dynamodb_delete():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        key = request.args.get("key", "").strip()
+        if not key:
+            return jsonify({"error": "query parameter 'key' is required"}), 400
+
+        try:
+            dynamodb_client.delete_item(
+                TableName=db_table_name,
+                Key={"id": {"S": key}}
+            )
+            logger.info("Deleted item key=%s from DynamoDB table %s", key, db_table_name)
+            record_audit("dynamodb-delete", "success", key=key)
+            return jsonify({"table": db_table_name, "key": key, "status": "deleted"}), 200
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to delete item from DynamoDB key=%s", key)
+            record_audit("dynamodb-delete", "error", key=key, detail=str(exc))
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/dynamodb/scan")
+    def dynamodb_scan():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        limit = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=100)
+
+        try:
+            response = dynamodb_client.scan(
+                TableName=db_table_name,
+                Limit=limit
+            )
+            items = response.get("Items", [])
+            parsed_items = []
+            for item in items:
+                raw_value = item.get("value", {}).get("S", "{}")
+                try:
+                    parsed_val = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    parsed_val = raw_value
+
+                parsed_items.append(
+                    {
+                        "key": item.get("id", {}).get("S"),
+                        "value": parsed_val,
+                        "updatedAt": item.get("updatedAt", {}).get("S")
+                    }
+                )
+            return jsonify(
+                {
+                    "table": db_table_name,
+                    "count": len(parsed_items),
+                    "items": parsed_items,
+                    "scannedCount": response.get("ScannedCount", 0)
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to scan DynamoDB table %s", db_table_name)
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/stress")
     def stress():

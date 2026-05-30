@@ -23,6 +23,7 @@ exec: true
 variables:
   LOG_LEVEL: INFO
   S3_BUCKET: aws-cloud-lab-production-ACCOUNT-ID-REGION
+  DYNAMODB_TABLE: aws-cloud-lab-production-store
 
 environments:
   production:

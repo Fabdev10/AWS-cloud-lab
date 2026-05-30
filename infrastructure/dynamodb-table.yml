@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: DynamoDB table for the AWS Cloud Lab portfolio project.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: aws-cloud-lab
+  EnvironmentName:
+    Type: String
+    Default: production
+
+Resources:
+  PortfolioTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${EnvironmentName}-store'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  TableName:
+    Description: Name of the portfolio DynamoDB table.
+    Value: !Ref PortfolioTable
+  TableArn:
+    Description: ARN of the portfolio DynamoDB table.
+    Value: !GetAtt PortfolioTable.Arn

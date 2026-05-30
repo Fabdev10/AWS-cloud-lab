@@ -23,12 +23,15 @@ aws-cloud-lab/
 ├── infrastructure/
 │   ├── cloudwatch-alarms.yml
 │   ├── cloudwatch-dashboard.yml
+│   ├── dynamodb-table.yml
 │   ├── iam-least-privilege.json
 │   ├── iam-s3-full-access-example.json
 │   ├── network.yml
 │   ├── s3-bucket.yml
 │   └── task-role-trust-policy.json
 ├── cli-scripts/
+│   ├── dynamodb-scan.ps1
+│   ├── dynamodb-scan.sh
 │   ├── ec2-status.ps1
 │   ├── ec2-status.sh
 │   ├── upload-to-s3.ps1
@@ -67,6 +70,11 @@ The Flask app exposes operational and demo endpoints:
 - `GET /s3/presign-get` generates a temporary download URL for an object.
 - `GET /s3/presign-put` generates a temporary upload URL for an object.
 - `DELETE /s3/object` deletes a specific object key.
+- `GET /dynamodb/check` validates that the task role can reach the configured DynamoDB table.
+- `POST /dynamodb/put` stores or updates a JSON payload under a partition key.
+- `GET /dynamodb/get?key=...` retrieves a stored JSON document by key.
+- `DELETE /dynamodb/delete?key=...` deletes a key-value document.
+- `GET /dynamodb/scan` lists/scans stored documents with limit control.
 - `GET /audit/recent` returns a small in-memory audit trail of recent mutating actions.
 - `GET /stress?seconds=20` generates CPU load for CloudWatch alarm demonstrations.
 
@@ -113,6 +121,11 @@ curl "http://localhost:8080/s3/list?prefix=demo/&limit=10&cursor=<nextCursor>"
 curl "http://localhost:8080/s3/presign-get?key=demo/demo-123.txt&expires=300"
 curl "http://localhost:8080/s3/presign-put?key=demo/upload.txt&expires=300&contentType=text/plain"
 curl -X DELETE "http://localhost:8080/s3/object?key=demo/demo-123.txt"
+curl http://localhost:8080/dynamodb/check
+curl -X POST http://localhost:8080/dynamodb/put -H "Content-Type: application/json" -d '{"key":"user-100","value":{"name":"John Doe","role":"developer"}}'
+curl "http://localhost:8080/dynamodb/get?key=user-100"
+curl "http://localhost:8080/dynamodb/scan?limit=10"
+curl -X DELETE "http://localhost:8080/dynamodb/delete?key=user-100"
 curl "http://localhost:8080/audit/recent?limit=10"
 ```
 
@@ -140,6 +153,24 @@ After deployment, get the generated bucket name:
 aws cloudformation describe-stacks \
   --stack-name aws-cloud-lab-storage \
   --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" \
+  --output text
+```
+
+## Step 1b: Create the DynamoDB table with CloudFormation
+
+```bash
+aws cloudformation deploy \
+  --stack-name aws-cloud-lab-database \
+  --template-file infrastructure/dynamodb-table.yml \
+  --parameter-overrides ProjectName=aws-cloud-lab EnvironmentName=production
+```
+
+After deployment, get the generated table name:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name aws-cloud-lab-database \
+  --query "Stacks[0].Outputs[?OutputKey=='TableName'].OutputValue" \
   --output text
 ```
 
@@ -298,6 +329,18 @@ Windows PowerShell variant:
 .\cli-scripts\ec2-status.ps1 -Region eu-west-1
 ```
 
+Scan DynamoDB table items:
+
+```bash
+./cli-scripts/dynamodb-scan.sh <table-name> 10
+```
+
+Windows PowerShell variant:
+
+```powershell
+.\cli-scripts\dynamodb-scan.ps1 -TableName <table-name> -Limit 10
+```
+
 ## Security notes
 
 - The S3 bucket blocks all public access and enables encryption at rest.
@@ -327,6 +370,7 @@ copilot env delete --name production
 aws cloudformation delete-stack --stack-name aws-cloud-lab-alarms
 aws cloudformation delete-stack --stack-name aws-cloud-lab-dashboard
 aws cloudformation delete-stack --stack-name aws-cloud-lab-storage
+aws cloudformation delete-stack --stack-name aws-cloud-lab-database
 aws cloudformation delete-stack --stack-name aws-cloud-lab-network
 ```
 

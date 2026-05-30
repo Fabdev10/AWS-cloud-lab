@@ -18,6 +18,18 @@
         "s3:DeleteObject"
       ],
       "Resource": "arn:aws:s3:::aws-cloud-lab-production-ACCOUNT-ID-REGION/demo/*"
+    },
+    {
+      "Sid": "DynamoDbAccess",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan"
+      ],
+      "Resource": "arn:aws:dynamodb:ACCOUNT-ID-REGION:table/aws-cloud-lab-production-store"
     }
   ]
 }

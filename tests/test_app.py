@@ -125,11 +125,47 @@ class FakeStsClient:
         }
 
 
+class FakeDynamoDbClient:
+    def __init__(self):
+        self.items = {}
+
+    def describe_table(self, TableName):
+        return {"Table": {"TableName": TableName, "TableStatus": "ACTIVE"}}
+
+    def put_item(self, TableName, Item):
+        key = Item["id"]["S"]
+        self.items[key] = Item
+        return {}
+
+    def get_item(self, TableName, Key):
+        key = Key["id"]["S"]
+        item = self.items.get(key)
+        if item:
+            return {"Item": item}
+        return {}
+
+    def delete_item(self, TableName, Key):
+        key = Key["id"]["S"]
+        self.items.pop(key, None)
+        return {}
+
+    def scan(self, TableName, Limit=20):
+        keys = sorted(self.items.keys())[:Limit]
+        scanned_items = [self.items[key] for key in keys]
+        return {
+            "Items": scanned_items,
+            "Count": len(scanned_items),
+            "ScannedCount": len(self.items)
+        }
+
+
 @pytest.fixture
 def client(monkeypatch):
     fake_s3 = FakeS3Client()
     fake_sts = FakeStsClient()
+    fake_ddb = FakeDynamoDbClient()
     monkeypatch.setenv("S3_BUCKET", "unit-test-bucket")
+    monkeypatch.setenv("DYNAMODB_TABLE", "unit-test-table")
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
 
     def fake_boto3_client(service_name, region_name=None):
@@ -137,6 +173,8 @@ def client(monkeypatch):
             return fake_s3
         if service_name == "sts":
             return fake_sts
+        if service_name == "dynamodb":
+            return fake_ddb
         raise ValueError(f"Unsupported fake AWS service: {service_name}")
 
     with patch.object(app_module.boto3, "client", side_effect=fake_boto3_client):
@@ -170,6 +208,11 @@ def test_info_endpoint_lists_new_routes(client):
     assert "POST /s3/copy-object" in data["endpoints"]
     assert "POST /s3/batch-delete" in data["endpoints"]
     assert "GET /audit/recent?limit=20" in data["endpoints"]
+    assert "GET /dynamodb/check" in data["endpoints"]
+    assert "GET /dynamodb/get?key=<item-key>" in data["endpoints"]
+    assert "POST /dynamodb/put" in data["endpoints"]
+    assert "DELETE /dynamodb/delete?key=<item-key>" in data["endpoints"]
+    assert "GET /dynamodb/scan?limit=20" in data["endpoints"]
 
 
 def test_aws_identity_endpoint(client):
@@ -399,3 +442,71 @@ def test_audit_recent_events(client):
     assert data["count"] >= 2
     assert any(event["action"] == "upload-json" for event in data["events"])
     assert any(event["action"] == "delete-object" for event in data["events"])
+
+
+def test_dynamodb_check_endpoint(client):
+    response = client.get("/dynamodb/check")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["table"] == "unit-test-table"
+    assert data["status"] == "reachable"
+
+
+def test_dynamodb_put_and_get(client):
+    # Store an item
+    put_response = client.post(
+        "/dynamodb/put",
+        json={"key": "user-123", "value": {"name": "Alice", "role": "admin"}},
+    )
+    assert put_response.status_code == 201
+    put_data = put_response.get_json()
+    assert put_data["status"] == "saved"
+    assert put_data["key"] == "user-123"
+
+    # Get the item
+    get_response = client.get("/dynamodb/get?key=user-123")
+    assert get_response.status_code == 200
+    get_data = get_response.get_json()
+    assert get_data["key"] == "user-123"
+    assert get_data["value"]["name"] == "Alice"
+    assert get_data["value"]["role"] == "admin"
+
+
+def test_dynamodb_get_not_found(client):
+    response = client.get("/dynamodb/get?key=non-existent")
+    assert response.status_code == 404
+    assert "item not found" in response.get_json()["error"]
+
+
+def test_dynamodb_delete(client):
+    # Save first
+    client.post(
+        "/dynamodb/put",
+        json={"key": "delete-me", "value": "some-value"},
+    )
+    # Delete
+    del_response = client.delete("/dynamodb/delete?key=delete-me")
+    assert del_response.status_code == 200
+    assert del_response.get_json()["status"] == "deleted"
+
+    # Verify deleted
+    get_response = client.get("/dynamodb/get?key=delete-me")
+    assert get_response.status_code == 404
+
+
+def test_dynamodb_scan(client):
+    client.post(
+        "/dynamodb/put",
+        json={"key": "item-a", "value": "val-a"},
+    )
+    client.post(
+        "/dynamodb/put",
+        json={"key": "item-b", "value": "val-b"},
+    )
+
+    response = client.get("/dynamodb/scan?limit=5")
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["count"] >= 2
+    assert any(item["key"] == "item-a" for item in data["items"])
+    assert any(item["key"] == "item-b" for item in data["items"])
