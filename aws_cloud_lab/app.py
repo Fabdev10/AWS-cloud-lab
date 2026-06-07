@@ -105,6 +105,7 @@ def create_app() -> Flask:
                     "POST /s3/batch-delete",
                     "DELETE /s3/object?key=demo/file.txt",
                     "GET /dynamodb/check",
+                    "GET /dynamodb/stats",
                     "GET /dynamodb/get?key=<item-key>",
                     "POST /dynamodb/put",
                     "DELETE /dynamodb/delete?key=<item-key>",
@@ -688,6 +689,38 @@ def create_app() -> Flask:
             return jsonify({"table": db_table_name, "status": "reachable"})
         except (ClientError, BotoCoreError) as exc:
             logger.exception("DynamoDB table check failed")
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/dynamodb/stats")
+    def dynamodb_stats():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        try:
+            response = dynamodb_client.describe_table(TableName=db_table_name)
+            table = response.get("Table", {})
+            table_size_bytes = int(table.get("TableSizeBytes", 0) or 0)
+            item_count = int(table.get("ItemCount", 0) or 0)
+            key_schema = [
+                key.get("AttributeName")
+                for key in table.get("KeySchema", [])
+                if isinstance(key, dict) and key.get("AttributeName")
+            ]
+
+            return jsonify(
+                {
+                    "table": db_table_name,
+                    "status": table.get("TableStatus"),
+                    "billingMode": table.get("BillingModeSummary", {}).get("BillingMode"),
+                    "itemCount": item_count,
+                    "tableSizeBytes": table_size_bytes,
+                    "tableSizeMiB": round(table_size_bytes / (1024 ** 2), 6),
+                    "keySchema": key_schema,
+                    "sampledAt": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except (ClientError, BotoCoreError, TypeError, ValueError) as exc:
+            logger.exception("Failed to retrieve DynamoDB stats for table %s", db_table_name)
             return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
 
     @app.post("/dynamodb/put")

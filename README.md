@@ -71,6 +71,7 @@ The Flask app exposes operational and demo endpoints:
 - `GET /s3/presign-put` generates a temporary upload URL for an object.
 - `DELETE /s3/object` deletes a specific object key.
 - `GET /dynamodb/check` validates that the task role can reach the configured DynamoDB table.
+- `GET /dynamodb/stats` returns table metadata (status, key schema, item count, and table size).
 - `POST /dynamodb/put` stores or updates a JSON payload under a partition key.
 - `GET /dynamodb/get?key=...` retrieves a stored JSON document by key.
 - `DELETE /dynamodb/delete?key=...` deletes a key-value document.
@@ -122,6 +123,7 @@ curl "http://localhost:8080/s3/presign-get?key=demo/demo-123.txt&expires=300"
 curl "http://localhost:8080/s3/presign-put?key=demo/upload.txt&expires=300&contentType=text/plain"
 curl -X DELETE "http://localhost:8080/s3/object?key=demo/demo-123.txt"
 curl http://localhost:8080/dynamodb/check
+curl http://localhost:8080/dynamodb/stats
 curl -X POST http://localhost:8080/dynamodb/put -H "Content-Type: application/json" -d '{"key":"user-100","value":{"name":"John Doe","role":"developer"}}'
 curl "http://localhost:8080/dynamodb/get?key=user-100"
 curl "http://localhost:8080/dynamodb/scan?limit=10"

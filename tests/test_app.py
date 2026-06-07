@@ -130,7 +130,19 @@ class FakeDynamoDbClient:
         self.items = {}
 
     def describe_table(self, TableName):
-        return {"Table": {"TableName": TableName, "TableStatus": "ACTIVE"}}
+        return {
+            "Table": {
+                "TableName": TableName,
+                "TableStatus": "ACTIVE",
+                "ItemCount": len(self.items),
+                "TableSizeBytes": sum(
+                    len(item.get("id", {}).get("S", "")) + len(item.get("value", {}).get("S", ""))
+                    for item in self.items.values()
+                ),
+                "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}],
+                "BillingModeSummary": {"BillingMode": "PAY_PER_REQUEST"},
+            }
+        }
 
     def put_item(self, TableName, Item):
         key = Item["id"]["S"]
@@ -209,6 +221,7 @@ def test_info_endpoint_lists_new_routes(client):
     assert "POST /s3/batch-delete" in data["endpoints"]
     assert "GET /audit/recent?limit=20" in data["endpoints"]
     assert "GET /dynamodb/check" in data["endpoints"]
+    assert "GET /dynamodb/stats" in data["endpoints"]
     assert "GET /dynamodb/get?key=<item-key>" in data["endpoints"]
     assert "POST /dynamodb/put" in data["endpoints"]
     assert "DELETE /dynamodb/delete?key=<item-key>" in data["endpoints"]
@@ -450,6 +463,24 @@ def test_dynamodb_check_endpoint(client):
     assert response.status_code == 200
     assert data["table"] == "unit-test-table"
     assert data["status"] == "reachable"
+
+
+def test_dynamodb_stats_endpoint(client):
+    client.post(
+        "/dynamodb/put",
+        json={"key": "stats-1", "value": {"team": "platform", "active": True}},
+    )
+
+    response = client.get("/dynamodb/stats")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["table"] == "unit-test-table"
+    assert data["status"] == "ACTIVE"
+    assert data["billingMode"] == "PAY_PER_REQUEST"
+    assert data["itemCount"] >= 1
+    assert data["tableSizeBytes"] > 0
+    assert "id" in data["keySchema"]
 
 
 def test_dynamodb_put_and_get(client):
