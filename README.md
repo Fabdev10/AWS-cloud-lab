@@ -76,6 +76,7 @@ The Flask app exposes operational and demo endpoints:
 - `GET /dynamodb/get?key=...` retrieves a stored JSON document by key.
 - `DELETE /dynamodb/delete?key=...` deletes a key-value document.
 - `GET /dynamodb/scan` lists/scans stored documents with limit control.
+- `GET /dynamodb/keys` returns only partition keys with optional prefix filtering.
 - `GET /audit/recent` returns a small in-memory audit trail of recent mutating actions.
 - `GET /stress?seconds=20` generates CPU load for CloudWatch alarm demonstrations.
 
@@ -127,6 +128,7 @@ curl http://localhost:8080/dynamodb/stats
 curl -X POST http://localhost:8080/dynamodb/put -H "Content-Type: application/json" -d '{"key":"user-100","value":{"name":"John Doe","role":"developer"}}'
 curl "http://localhost:8080/dynamodb/get?key=user-100"
 curl "http://localhost:8080/dynamodb/scan?limit=10"
+curl "http://localhost:8080/dynamodb/keys?prefix=user-&limit=10"
 curl -X DELETE "http://localhost:8080/dynamodb/delete?key=user-100"
 curl "http://localhost:8080/audit/recent?limit=10"
 ```

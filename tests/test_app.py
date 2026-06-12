@@ -226,6 +226,7 @@ def test_info_endpoint_lists_new_routes(client):
     assert "POST /dynamodb/put" in data["endpoints"]
     assert "DELETE /dynamodb/delete?key=<item-key>" in data["endpoints"]
     assert "GET /dynamodb/scan?limit=20" in data["endpoints"]
+    assert "GET /dynamodb/keys?prefix=user-&limit=20" in data["endpoints"]
 
 
 def test_aws_identity_endpoint(client):
@@ -541,3 +542,47 @@ def test_dynamodb_scan(client):
     assert data["count"] >= 2
     assert any(item["key"] == "item-a" for item in data["items"])
     assert any(item["key"] == "item-b" for item in data["items"])
+
+
+def test_dynamodb_keys_with_prefix_and_limit(client):
+    client.post(
+        "/dynamodb/put",
+        json={"key": "user-1", "value": {"name": "Alice"}},
+    )
+    client.post(
+        "/dynamodb/put",
+        json={"key": "user-2", "value": {"name": "Bob"}},
+    )
+    client.post(
+        "/dynamodb/put",
+        json={"key": "admin-1", "value": {"name": "Root"}},
+    )
+
+    response = client.get("/dynamodb/keys?prefix=user-&limit=1")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["prefix"] == "user-"
+    assert data["count"] == 1
+    assert len(data["keys"]) == 1
+    assert data["keys"][0].startswith("user-")
+
+
+def test_dynamodb_keys_without_prefix(client):
+    client.post(
+        "/dynamodb/put",
+        json={"key": "k-1", "value": "v1"},
+    )
+    client.post(
+        "/dynamodb/put",
+        json={"key": "k-2", "value": "v2"},
+    )
+
+    response = client.get("/dynamodb/keys?limit=5")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["prefix"] is None
+    assert data["count"] >= 2
+    assert "k-1" in data["keys"]
+    assert "k-2" in data["keys"]

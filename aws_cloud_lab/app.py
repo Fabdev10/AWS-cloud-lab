@@ -110,6 +110,7 @@ def create_app() -> Flask:
                     "POST /dynamodb/put",
                     "DELETE /dynamodb/delete?key=<item-key>",
                     "GET /dynamodb/scan?limit=20",
+                    "GET /dynamodb/keys?prefix=user-&limit=20",
                     "GET /stress?seconds=20",
                 ],
             }
@@ -855,6 +856,41 @@ def create_app() -> Flask:
             )
         except (ClientError, BotoCoreError) as exc:
             logger.exception("Failed to scan DynamoDB table %s", db_table_name)
+            return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
+
+    @app.get("/dynamodb/keys")
+    def dynamodb_keys():
+        if not db_table_name:
+            return table_not_configured_response()
+
+        prefix = request.args.get("prefix", "").strip()
+        limit = parse_bounded_int(request.args.get("limit"), default=20, minimum=1, maximum=100)
+
+        try:
+            response = dynamodb_client.scan(
+                TableName=db_table_name,
+                Limit=100,
+            )
+            all_keys = sorted(
+                item.get("id", {}).get("S")
+                for item in response.get("Items", [])
+                if item.get("id", {}).get("S")
+            )
+            if prefix:
+                all_keys = [key for key in all_keys if key.startswith(prefix)]
+
+            keys = all_keys[:limit]
+            return jsonify(
+                {
+                    "table": db_table_name,
+                    "prefix": prefix or None,
+                    "count": len(keys),
+                    "keys": keys,
+                    "scannedCount": response.get("ScannedCount", 0),
+                }
+            )
+        except (ClientError, BotoCoreError) as exc:
+            logger.exception("Failed to list keys from DynamoDB table %s", db_table_name)
             return jsonify({"table": db_table_name, "status": "error", "detail": str(exc)}), 500
 
     @app.get("/stress")
